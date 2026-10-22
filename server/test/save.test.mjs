@@ -1,0 +1,33 @@
+// 계정 연동 시험: cd server && npx wrangler dev --var FAST_TEST:1 --var ADMIN_KEY:test  →  node test/save.test.mjs
+const BASE = process.env.BASE || 'http://127.0.0.1:8787';
+let fails = 0, n = 0;
+const ok = (c, m) => { n++; if (!c) { fails++; console.log('✗', m); } else console.log('✓', m); };
+const req = (p, b) => fetch(BASE + p, b === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
+
+const game = { money: 1234, tier: 7, items: { iron: 3 }, store: [13], attempts: 40 };
+const bad = await req('/api/save', { data: { hello: 1 } });
+ok(bad.status === 400, '게임 내용이 아니면 거절');
+const big = await req('/api/save', { data: { ...game, junk: 'x'.repeat(50000) } });
+ok(big.status >= 400, '너무 크면 거절');
+const a = await req('/api/save', { data: game });
+ok(/^[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}$/.test(a.code) && a.rev === 1, '연동 코드 만들기 ' + a.code);
+const g = await req('/api/save/' + a.code.toLowerCase().replace(/-/g, ' ').replace(/ /g, ''));
+ok(g.status === 200 && g.rev === 1 && g.data.tier === 7 && g.data.store[0] === 13, '소문자·하이픈 없이 넣어도 불러옴');
+const w1 = await req('/api/save/' + a.code, { data: { ...game, tier: 9 }, baseRev: 1 });
+ok(w1.rev === 2, '저장하면 rev가 오름');
+const w2 = await req('/api/save/' + a.code, { data: { ...game, tier: 3 }, baseRev: 1 });
+ok(w2.status === 409 && w2.conflict && w2.rev === 2 && w2.data.tier === 9, '다른 기기가 먼저 저장했으면 409 + 서버 기록');
+const w3 = await req('/api/save/' + a.code, { data: { ...game, tier: 3 }, baseRev: 2 });
+ok(w3.rev === 3, '최신 rev로 다시 보내면 저장');
+const g2 = await req('/api/save/' + a.code);
+ok(g2.data.tier === 3 && g2.rev === 3, '마지막 저장 내용이 남음');
+const none = await req('/api/save/2222-2222-2222');
+ok(none.status === 404, '없는 코드는 404');
+const wn = await req('/api/save/2222-2222-2222', { data: game, baseRev: 1 });
+ok(wn.status === 404, '없는 코드에 저장 못 함');
+const badc = await req('/api/save/OOOO-1111-IIII');
+ok(badc.status === 400, '쓰지 않는 글자(0 O 1 I)가 섞이면 잘못된 코드');
+const b = await req('/api/save', { data: game });
+ok(b.code && b.code !== a.code, '코드는 매번 다름');
+console.log(`\n${n - fails}/${n} 통과`);
+process.exit(fails ? 1 : 0);

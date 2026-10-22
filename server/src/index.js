@@ -1,10 +1,12 @@
 /* 한판 검 강화 서버 (Cloudflare Workers + Durable Objects)
  * - Rank: 최고 강화 랭킹 + 클리어(+29) 시간 랭킹
  * - Inbox: 의견·고장 신고함, 관리 페이지 /admin
+ * - Save: 계정 연동(연동 코드로 다른 기기에서 이어 하기)
  */
 import { Inbox, ADMIN_HTML } from './inbox.js';
 import { Rank } from './rank.js';
-export { Inbox, Rank };
+import { Save, newCode, cleanCode, fmtCode, MAX_SAVE } from './save.js';
+export { Inbox, Rank, Save };
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -28,6 +30,15 @@ async function body(request, max = 8000) {
   if (+(request.headers.get('content-length') || 0) > max) return null;
   try { const b = await request.json(); return b && typeof b === 'object' ? b : {}; } catch (e) { return null; }
 }
+const saveStub = (env, code) => env.SAVE.get(env.SAVE.idFromName('code:' + code));
+const limits = (env) => env.SAVE.get(env.SAVE.idFromName('limits'));
+// 저장 내용: 게임 상태 객체만, 크기 제한
+function saveData(b) {
+  const d = b && b.data;
+  if (!d || typeof d !== 'object' || Array.isArray(d) || typeof d.money !== 'number' || typeof d.tier !== 'number') return null;
+  const s = JSON.stringify(d);
+  return s.length <= MAX_SAVE ? JSON.parse(s) : null;
+}
 const who = (request) => request.headers.get('CF-Connecting-IP') || 'anon';
 
 export default {
@@ -47,6 +58,38 @@ export default {
         const s = rankStub(env);
         const r = m[1] === 'best' ? await s.best(b) : m[1] === 'clear' ? await s.clear(b) : await s.setName(b);
         return json(r, r.error ? 400 : 200);
+      }
+      if (p === '/api/save' && request.method === 'POST') {
+        const data = saveData(await body(request, MAX_SAVE + 2000));
+        if (!data) return json({ error: '저장할 게임 내용이 이상해요' }, 400);
+        if (!(await limits(env).hit('new', who(request), 10))) return json({ error: '연동 코드를 너무 자주 만들었어요. 잠시 뒤에 다시 해 주세요' }, 429);
+        for (let i = 0; i < 3; i++) {
+          const code = newCode();
+          const r = await saveStub(env, code).create(data);
+          if (!r.error) return json({ code: fmtCode(code), rev: r.rev, at: r.at });
+        }
+        return json({ error: '코드를 만들지 못했어요. 다시 해 주세요' }, 500);
+      }
+      const sm = p.match(/^\/api\/save\/([A-Za-z0-9-]{12,16})$/);
+      if (sm) {
+        const code = cleanCode(sm[1]);
+        if (!code) return json({ error: '연동 코드는 12자리예요' }, 400);
+        if (request.method === 'GET') {
+          const r = await saveStub(env, code).read();
+          if (r) return json({ code: fmtCode(code), ...r });
+          if (!(await limits(env).hit('miss', who(request), 30))) return json({ error: '없는 코드를 너무 많이 넣었어요. 한 시간 뒤에 다시 해 주세요' }, 429);
+          return json({ error: '그런 연동 코드가 없어요' }, 404);
+        }
+        if (request.method === 'POST') {
+          const b = await body(request, MAX_SAVE + 2000);
+          const data = saveData(b);
+          if (!data) return json({ error: '저장할 게임 내용이 이상해요' }, 400);
+          if (!(await limits(env).hit('put', who(request), 1200))) return json({ error: '너무 자주 저장했어요' }, 429);
+          const r = await saveStub(env, code).write(data, b.baseRev);
+          if (r.missing) return json({ error: '그런 연동 코드가 없어요' }, 404);
+          if (r.conflict) return json({ conflict: true, rev: r.rev, at: r.at, data: r.data }, 409);
+          return json(r);
+        }
       }
       if (p === '/api/rank' && request.method === 'GET') return json(await rankStub(env).board());
       if (p === '/api/stats') { const b = await rankStub(env).board(); return json({ starts: b.starts, clears: b.clears }); }

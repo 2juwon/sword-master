@@ -179,6 +179,7 @@ button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 .fail-acts .sbtn{position:relative;overflow:hidden;padding:13px 14px;font-size:15px;display:flex;align-items:center;gap:8px;justify-content:center}
 .fail-acts .sbtn svg{width:18px;height:18px;flex:none}
 .fail-acts .sbtn small{font-size:12px;opacity:.75}
+.fail-acts .sbtn.two{flex-direction:column;gap:3px;white-space:normal;text-align:center}
 .fail-acts .rev{background:linear-gradient(180deg,#4c9cf0,#2a6fc4);border-color:#8fc4ff;color:#fff}
 .fail-acts .rev:disabled{background:var(--raise);border-color:var(--line);color:var(--muted)}
 .fail-acts .arming{opacity:.55}
@@ -197,6 +198,7 @@ button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
     <span class="spacer"></span>
     <div class="chip" id="cMoney" title=""><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#ffc95a" stroke="#9a6a1a" stroke-width="1.5"/><path d="M6.5 7.5 8 13l2-4 2 4 1.5-5.5" fill="none" stroke="#7a4a0a" stroke-width="1.4" stroke-linejoin="round"/></svg><b id="vMoney">0원</b></div>
     <div class="chip" title="깨짐 방지권"><svg viewBox="0 0 20 20"><path d="M10 2 3.5 4.5v5c0 4 3 7 6.5 8.5 3.5-1.5 6.5-4.5 6.5-8.5v-5Z" fill="#6fb6ff" stroke="#1e4f86" stroke-width="1.3"/><path d="M7 10l2 2 4-4" fill="none" stroke="#0b2440" stroke-width="1.6"/></svg><b id="vProt">0</b></div>
+    <button class="icon-btn" id="bSync" aria-label="계정 연동"></button>
     <button class="icon-btn" id="bSound" aria-label="소리 켜고 끄기"></button>
   </header>
 
@@ -340,14 +342,14 @@ const V=[
 function fresh(){return{money:20000,prot:0,tier:0,items:{},store:[],dex:[1],attempts:0,succ:0,breaks:0,best:0,bestSale:0,grit:0,sound:true,start:Date.now(),cleared:null}}
 let S=fresh();
 try{const r=JSON.parse(localStorage.getItem(SAVE)||'null');if(r&&typeof r.money==='number')S=Object.assign(fresh(),r)}catch(e){}
-function save(){try{localStorage.setItem(SAVE,JSON.stringify(S))}catch(e){}}
+function save(){try{localStorage.setItem(SAVE,JSON.stringify(S))}catch(e){}if(typeof markDirty==='function')markDirty()}
 
 /* ───── 랭킹·의견 서버 ───── */
 const SERVER='';//@SERVER
 const PAGES_URL='https://2juwon.github.io/sword-master/';
 async function api(path,body){
   const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),8000);
-  try{const r=await fetch(SERVER+path,body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:ctl.signal}:{signal:ctl.signal});const j=await r.json().catch(()=>({}));if(!r.ok&&!j.error)j.error='서버가 응답하지 않아요 ('+r.status+')';return j}
+  try{const r=await fetch(SERVER+path,body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:ctl.signal}:{signal:ctl.signal});const j=await r.json().catch(()=>({}));j._s=r.status;if(!r.ok&&!j.error)j.error='서버가 응답하지 않아요 ('+r.status+')';return j}
   catch(e){return{error:'서버에 연결하지 못했어요'}}finally{clearTimeout(tm)}
 }
 let runBusy=false;
@@ -366,6 +368,99 @@ async function clearRun(){
   const r=await api('/api/run/clear',{run:S.run.id,token:S.run.token,attempts:S.attempts,breaks:S.breaks});
   if(r.ok){S.clearMs=r.ms;S.rankBest=MAX;save()}
   return r;
+}
+/* ───── 계정 연동: 연동 코드로 다른 기기에서 이어 하기 ─────
+   SY.rev = 마지막으로 맞춘 서버 판 번호, SY.dirty = 그 뒤로 이 기기에서 바뀐 게 있음 */
+const SYNC_KEY='hanpan-sword-sync';
+let SY={code:'',rev:0,dirty:false,at:0};
+try{SY=Object.assign(SY,JSON.parse(localStorage.getItem(SYNC_KEY)||'{}'))}catch(e){}
+function saveSY(){try{localStorage.setItem(SYNC_KEY,JSON.stringify(SY))}catch(e){}}
+let syncTimer=0,syncFirst=0,syncBusy=false,syncState='',applying=false,localSeq=0,pendingConflict=null;
+function markDirty(){
+  if(!SERVER||!SY.code||applying)return;
+  localSeq++;if(!SY.dirty){SY.dirty=true;saveSY()}
+  if(!syncFirst)syncFirst=Date.now();
+  clearTimeout(syncTimer);syncTimer=setTimeout(pushSave,Math.max(0,Math.min(4000,15000-(Date.now()-syncFirst))));
+  setSync('wait');
+}
+function setSync(st){syncState=st;syncIcon()}
+async function pushSave(){
+  if(!SY.code||!SY.dirty)return;
+  if(syncBusy){clearTimeout(syncTimer);syncTimer=setTimeout(pushSave,1500);return}
+  syncBusy=true;setSync('saving');const seq=localSeq;
+  const r=await api('/api/save/'+SY.code,{data:S,baseRev:SY.rev});
+  syncBusy=false;syncFirst=0;
+  if(r._s===409){onConflict(r);return}   // 409에도 rev가 들어 있어서 성공보다 먼저 봐야 함
+  if(r._s===200&&r.rev){SY.rev=r.rev;SY.at=r.at;if(seq===localSeq)SY.dirty=false;saveSY();setSync(SY.dirty?'wait':'ok');if(SY.dirty)markDirty();return}
+  if(r._s===404){toast('연동 코드가 서버에 없어요. 연동을 끊었어요');SY={code:'',rev:0,dirty:false,at:0};saveSY();setSync('');return}
+  setSync('off');clearTimeout(syncTimer);syncTimer=setTimeout(pushSave,15000);
+}
+async function pullSave(){
+  if(!SERVER||!SY.code||syncBusy)return;
+  const r=await api('/api/save/'+SY.code);
+  if(r._s===404){toast('연동 코드가 서버에 없어요. 연동을 끊었어요');SY={code:'',rev:0,dirty:false,at:0};saveSY();setSync('');return}
+  if(!r.rev){setSync('off');return}
+  if(r.rev>SY.rev){if(SY.dirty)onConflict(r);else applyRemote(r,'다른 기기에서 하던 기록을 불러왔어요')}
+  else setSync(SY.dirty?'wait':'ok');
+}
+function applyRemote(r,msg){
+  if(busy()||(sheetOpen&&!pendingConflict&&$('#shT').textContent!=='계정 연동')){setTimeout(()=>applyRemote(r,msg),800);return}
+  const snd=S.sound;
+  applying=true;S=Object.assign(fresh(),r.data);S.sound=snd;save();applying=false;
+  SY.rev=r.rev;SY.at=r.at;SY.dirty=false;saveSY();pendingConflict=null;
+  hidden=false;shards=[];marks=[];anim={type:'appear',t0:nowT};closeSheet(true);ui();soundIcon();setSync('ok');
+  if(msg)toast(msg);
+}
+const sumOf=d=>`+${d.tier} ${T[clamp(d.tier|0,0,MAX)].n} · ${won(d.money||0)} · 강화 ${(d.attempts||0).toLocaleString()}번`;
+function onConflict(r){
+  pendingConflict=r;setSync('conflict');
+  const t=new Date(r.at).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'});
+  sheet('어느 기록으로 할까요?',`<p class="note">다른 기기에서도 이 연동 코드로 게임을 진행했어요. 남길 기록 하나를 골라 주세요. 고르지 않은 쪽은 사라져요.</p>
+  <div class="fail-acts"><button class="sbtn rev two" id="cfRemote"><span>다른 기기 기록 (${esc(t)} 저장)</span><small>${esc(sumOf(r.data))}</small></button>
+  <button class="sbtn two" id="cfLocal"><span>이 기기 기록</span><small>${esc(sumOf(S))}</small></button></div>`,false);
+  $('#cfRemote').onclick=()=>applyRemote(r,'다른 기기 기록으로 이어 해요');
+  $('#cfLocal').onclick=()=>{SY.rev=r.rev;SY.dirty=true;saveSY();pendingConflict=null;closeSheet(true);syncBusy=false;pushSave();toast('이 기기 기록으로 맞췄어요')};
+}
+function syncIcon(){
+  const b=$('#bSync');if(!b)return;
+  const c={ok:'#73e0a9',saving:'#ffc95a',wait:'#ffc95a',off:'#ff5468',conflict:'#ff9a48'}[syncState]||'#6a5a52';
+  const mark=!SY.code?'':syncState==='ok'?`<path d="M7.5 11.5l2 2 3.5-3.5" stroke="${c}" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`:syncState==='off'?`<path d="M8 9l4 4M12 9l-4 4" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/>`:`<path d="M10 13.5V9M8 11l2-2 2 2" stroke="${c}" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+  b.innerHTML=`<svg viewBox="0 0 20 20" fill="none"><path d="M6 15.5h8.5a3.5 3.5 0 0 0 .3-7A5 5 0 0 0 5.2 9.3 3.2 3.2 0 0 0 6 15.5z" stroke="${SY.code?c:'#a8968a'}" stroke-width="1.5" ${SY.code?'':'stroke-dasharray="2 1.6"'}/>${mark}</svg>`;
+  b.title=!SY.code?'계정 연동하기':{ok:'연동됨 · 저장 완료',saving:'저장하는 중',wait:'곧 저장해요',off:'서버에 연결하지 못했어요',conflict:'기록을 골라 주세요'}[syncState]||'연동됨';
+}
+function openSync(){
+  if(!SERVER){sheet('계정 연동',`<p class="note">계정 연동은 GitHub 버전에서 돼요. 이 화면은 다른 서버에 연결할 수 없어요.</p><div class="big-acts"><a class="sbtn hot" style="text-align:center;text-decoration:none" href="${PAGES_URL}" target="_blank" rel="noopener">${PAGES_URL.replace('https://','')} 열기</a></div>`);return}
+  let h='';
+  if(SY.code){
+    const t=SY.at?new Date(SY.at).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+    h=`<p class="note">다른 PC나 브라우저에서 아래 코드를 넣으면 지금 기록을 그대로 이어서 할 수 있어요. 게임이 바뀔 때마다 몇 초 안에 저절로 저장돼요.</p>
+    <div class="rk-me" style="text-align:center"><div class="note" style="margin:0 0 4px">내 연동 코드</div><div id="syCode" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:26px;letter-spacing:.08em;color:var(--gold);user-select:all">${esc(SY.code)}</div>
+    <div class="note" style="margin:6px 0 0">${syncState==='off'?'<span style="color:var(--danger)">서버에 연결하지 못했어요. 잠시 뒤에 다시 저장해요</span>':SY.dirty?'저장할 내용이 있어요':t?'마지막 저장 '+esc(t):''}</div></div>
+    <div class="big-acts"><button class="sbtn hot" id="syCopy">코드 복사</button><button class="sbtn" id="syNow">지금 저장</button><button class="sbtn" id="syOff">이 기기에서 연동 끊기</button></div>
+    <p class="note" style="font-size:12px">코드를 아는 사람은 누구나 이 기록을 이어서 할 수 있어요. 남에게 알려 주지 마세요.</p>`;
+  }else{
+    h=`<p class="note">연동 코드를 만들면 지금 기록이 서버에 저장되고, 다른 PC나 브라우저에서 그 코드로 이어서 할 수 있어요. 가입이나 로그인은 없어요.</p>
+    <div class="big-acts"><button class="sbtn hot" id="syNew">내 연동 코드 만들기</button></div>
+    <h3 style="font-family:var(--display);font-weight:400;color:var(--gold);margin:18px 0 6px">다른 기기에서 하던 기록 가져오기</h3>
+    <div class="field"><input id="syIn" maxlength="16" placeholder="XXXX-XXXX-XXXX" autocapitalize="characters" autocomplete="off" spellcheck="false" style="font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.06em"><button class="sbtn" id="syFind">찾기</button></div>
+    <div id="syPrev"></div>`;
+  }
+  sheet('계정 연동',h);
+  const B=$('#shB');
+  const cp=$('#syCopy');if(cp)cp.onclick=async()=>{try{await navigator.clipboard.writeText(SY.code);toast('코드를 복사했어요')}catch(e){const r=document.createRange();r.selectNodeContents($('#syCode'));const sel=getSelection();sel.removeAllRanges();sel.addRange(r);toast('코드를 선택했어요. 복사해 주세요')}};
+  const nw=$('#syNow');if(nw)nw.onclick=async()=>{SY.dirty=true;saveSY();await pushSave();openSync()};
+  const off=$('#syOff');if(off)off.onclick=()=>{if(off.dataset.armed!=='1'){off.dataset.armed='1';off.textContent='한 번 더 누르면 이 기기만 연동을 끊어요 (서버 기록은 남아요)';off.style.color='var(--danger)';return}SY={code:'',rev:0,dirty:false,at:0};saveSY();setSync('');toast('이 기기에서 연동을 끊었어요');openSync()};
+  const mk=$('#syNew');if(mk)mk.onclick=async()=>{mk.disabled=true;mk.textContent='만드는 중…';const r=await api('/api/save',{data:S});if(r.code){SY={code:r.code,rev:r.rev,dirty:false,at:r.at};saveSY();setSync('ok');SFX.coin();openSync()}else{toast(r.error);mk.disabled=false;mk.textContent='내 연동 코드 만들기'}};
+  const fd=$('#syFind');if(fd)fd.onclick=async()=>{
+    const code=$('#syIn').value.trim();if(!code){toast('연동 코드를 넣어 주세요');return}
+    fd.disabled=true;const r=await api('/api/save/'+encodeURIComponent(code.replace(/\s/g,'')));fd.disabled=false;
+    const pv=$('#syPrev');if(!pv)return;
+    if(!r.rev){pv.innerHTML=`<p class="note" style="color:var(--danger)">${esc(r.error||'찾지 못했어요')}</p>`;return}
+    pv.innerHTML=`<div class="rk-me" style="margin-top:10px"><div class="note" style="margin:0">찾은 기록</div><div style="margin-top:4px">${esc(sumOf(r.data))}</div></div>
+      <div class="fail-acts" style="margin-top:0"><button class="sbtn rev" id="syUse"><span>이 기록으로 이어 하기</span></button></div>
+      <p class="note" style="font-size:12px">지금 이 기기의 기록(${esc(sumOf(S))})은 사라지고 찾은 기록으로 바뀌어요.</p>`;
+    $('#syUse').onclick=()=>{SY={code:r.code,rev:0,dirty:false,at:0};saveSY();applyRemote(r,'연동했어요. 이어서 두들겨요!')};
+  };
 }
 function fmtMs(ms){const m=Math.floor(ms/60000),h=Math.floor(m/60);return h?`${h}시간 ${m%60}분`:`${m}분 ${Math.floor(ms/1000)%60}초`}
 
@@ -1050,7 +1145,7 @@ function openMore(){
   <li>돈은 검을 <b>팔아서</b>만 벌어요. +10 이상은 실수 방지로 두 번 눌러야 팔려요.</li>
   <li>+6~+16에서 부서지면 <b>잔해</b>가 나와요. 조합소에서 방지권이나 검으로 바꿔요.</li>
   <li>+21·+22·+24 강화에는 <b>보관한 검</b>이, +23·+25·+27엔 잔해가 재료로 들어가요. 끝은 +29.</li>
-  <li>단축키: 스페이스 강화, S 판매. 기록은 이 브라우저에만 저장돼요.</li></ul>
+  <li>단축키: 스페이스 강화, S 판매. 기록은 이 브라우저에 저장되고, 위쪽 구름 버튼으로 연동 코드를 만들면 다른 기기에서 이어 할 수 있어요.</li></ul>
   <p class="note" style="margin-top:12px">옛 플래시 게임 「검 강화하기」(NBS)를 바탕으로 새로 만든 팬 게임이에요. 검 이름·그림·수치는 따로 정했어요.</p>
   <div class="big-acts"><button class="sbtn hot" id="mFb">의견 보내기</button><button class="sbtn" id="mReset">처음부터 다시 하기</button></div>`;
   sheet('기록',h);
@@ -1128,6 +1223,8 @@ function ending(cr){
 /* ───── 연결 ───── */
 $('#bForge').onclick=forge;$('#bSell').onclick=sell;$('#bStore').onclick=store;
 $('#tShop').onclick=openShop;$('#tCraft').onclick=openCraft;$('#tBag').onclick=openBag;$('#tDex').onclick=()=>openDex();$('#tMore').onclick=openMore;$('#tRank').onclick=openRank;
+$('#bSync').onclick=openSync;
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')pullSave();else if(SY.dirty&&SY.code&&SERVER){try{fetch(SERVER+'/api/save/'+SY.code,{method:'POST',keepalive:true,headers:{'content-type':'application/json'},body:JSON.stringify({data:S,baseRev:SY.rev})}).then(r=>r.ok?r.json():{}).then(j=>{if(j.rev){SY.rev=j.rev;SY.dirty=false;saveSY()}}).catch(()=>{})}catch(e){}}});
 $('#bSound').onclick=()=>{S.sound=!S.sound;soundIcon();save();if(S.sound)SFX.coin()};
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){closeSheet();return}
@@ -1137,7 +1234,7 @@ document.addEventListener('keydown',e=>{
 });
 cv.addEventListener('pointerdown',()=>{if(!sheetOpen)forge()});
 if(S.tier===MAX&&!S.dex[MAX])S.dex[MAX]=1;
-soundIcon();ui();startRun();
+soundIcon();ui();syncIcon();startRun();if(SY.code){if(SY.dirty)pushSave().then(pullSave);else pullSave()}
 if(document.fonts&&document.fonts.ready)document.fonts.ready.then(()=>{});
 requestAnimationFrame(t=>{last=t;requestAnimationFrame(frame)});
 </script>
