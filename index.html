@@ -190,6 +190,15 @@ button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 .seg{display:flex;gap:6px;margin-bottom:8px}
 .seg button{flex:1;padding:9px;border-radius:10px;background:var(--bg2);border:1px solid var(--line);font-size:14px;color:var(--muted)}
 .seg button[aria-pressed=true]{background:linear-gradient(#4a3424,#2c1f18);border-color:#8a6236;color:var(--gold)}
+.fail-acts{display:flex;flex-direction:column;gap:8px;margin:10px 0 14px}
+.fail-acts .sbtn{position:relative;overflow:hidden;padding:13px 14px;font-size:15px;display:flex;align-items:center;gap:8px;justify-content:center}
+.fail-acts .sbtn svg{width:18px;height:18px;flex:none}
+.fail-acts .sbtn small{font-size:12px;opacity:.75}
+.fail-acts .rev{background:linear-gradient(180deg,#4c9cf0,#2a6fc4);border-color:#8fc4ff;color:#fff}
+.fail-acts .rev:disabled{background:var(--raise);border-color:var(--line);color:var(--muted)}
+.fail-acts .arming{opacity:.55}
+.fail-acts .arming::after{content:"";position:absolute;left:0;bottom:0;height:3px;width:100%;background:rgba(255,255,255,.7);transform-origin:left;animation:arm 1s linear forwards}
+@keyframes arm{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:#2e2224;border:1px solid var(--line);padding:10px 16px;border-radius:999px;z-index:40;font-size:14px;max-width:calc(100% - 40px);text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.5);animation:up .2s}
 .ending{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 40%,rgba(255,160,60,.18),rgba(10,6,6,.82));padding:24px max(16px,env(safe-area-inset-right,0px)) 24px max(16px,env(safe-area-inset-left,0px))}
 .ending .card{max-width:420px;width:100%;text-align:center;background:rgba(31,23,25,.92);border:1px solid #6a4a2a;border-radius:20px;padding:22px 18px}
@@ -875,19 +884,23 @@ function breakNow(g){
   anim={type:'broken',t0:nowT,tier};
   save();ui();
 }
+const ARM_MS=1000; // 부서짐 창 버튼이 눌리기 시작하는 시간 (연타로 잘못 누르지 않게)
 function openFail(){
-  const tier=anim.tier,need=T[tier].prot;
-  let h=`<div class="fail-h">+${tier} ${T[tier].n}이(가) 부서졌어요</div>`;
+  const tier=anim.tier,need=T[tier].prot,canRev=need>0&&S.prot>=need;
+  if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
+  // 버튼은 창 위쪽에 두고(아래 강화 버튼 자리와 안 겹치게), 1초 동안 잠가 둠
+  let h=`<div class="fail-h">+${tier} ${T[tier].n}이(가) 부서졌어요</div><div class="fail-acts">`;
+  if(need>0)h+=`<button class="sbtn rev arming" id="fRev" disabled data-ok="${canRev?1:0}">${holdSvg}<span>방지권 ${need}장으로 되살리기</span><small>가진 것 ${S.prot}장</small></button>`;
+  h+=`<button class="sbtn arming" id="fNew" disabled data-ok="1"><span>녹슨 철검으로 다시 시작</span></button></div>`;
+  if(need<0)h+=`<p class="note">+26부터는 방지권으로 되살릴 수 없어요.</p>`;
+  else if(need>0&&!canRev)h+=`<p class="note">방지권이 ${need-S.prot}장 모자라요. 상점이나 조합소에서 구할 수 있어요.</p>`;
   h+=lastDrop?`<p class="note">잔해에서 주웠어요</p><div class="mats"><span class="mat">${itemSvg(lastDrop.k)}${ITEMS[lastDrop.k].n} ×${lastDrop.n}</span></div>`:`<p class="note">쓸 만한 잔해는 없었어요.</p>`;
   if(tier>=8&&S.grit>0)h+=`<p class="note">집념 ${S.grit}칸: 다음 성공까지 성공 확률 +${(Math.min(S.grit,10)*.5).toFixed(1)}%p</p>`;
-  h+='<div class="big-acts">';
-  if(need>0)h+=`<button class="sbtn hot" id="fRev" ${S.prot>=need?'':'disabled'}>방지권 ${need}장으로 되살리기 (가진 것 ${S.prot}장)</button>`;
-  else if(need<0)h+=`<p class="note">+26부터는 방지권으로 되살릴 수 없어요.</p>`;
-  h+=`<button class="sbtn" id="fNew">녹슨 철검으로 다시 시작</button></div>`;
   sheet('부서짐',h,false);
   resumeNeedle();
-  const rv=$('#fRev');if(rv)rv.onclick=()=>{S.prot-=need;closeSheet(true);hidden=false;shards=[];anim={type:'appear',t0:nowT};pop=.6;popV=0;splash('되살렸다',`+${tier} ${T[tier].n}`,'#6fb6ff');SFX.ok(3);save();ui()};
-  $('#fNew').onclick=()=>{S.tier=0;closeSheet(true);hidden=false;shards=[];anim={type:'appear',t0:nowT};save();ui()};
+  setTimeout(()=>{document.querySelectorAll('.fail-acts .arming').forEach(b=>{b.classList.remove('arming');b.disabled=b.dataset.ok!=='1'})},ARM_MS);
+  const rv=$('#fRev');if(rv)rv.onclick=()=>{if(rv.disabled||S.prot<need)return;S.prot-=need;closeSheet(true);hidden=false;shards=[];anim={type:'appear',t0:nowT};pop=.6;popV=0;splash('되살렸다',`+${tier} ${T[tier].n}`,'#6fb6ff');SFX.ok(3);save();ui()};
+  $('#fNew').onclick=()=>{if($('#fNew').disabled)return;S.tier=0;closeSheet(true);hidden=false;shards=[];anim={type:'appear',t0:nowT};save();ui()};
 }
 // 다음 강화할 돈이 없을 때: 팔 게 있으면 판매를 권하고, 팔아도 1천원이 안 되면 지원금
 function assets(){return S.money+(S.tier>0&&T[S.tier].sell>0?T[S.tier].sell:0)+S.store.reduce((a,t)=>a+Math.max(0,T[t].sell),0)}
