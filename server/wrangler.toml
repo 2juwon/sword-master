@@ -1,0 +1,20 @@
+name = "sword-master"
+main = "src/index.js"
+compatibility_date = "2025-10-01"
+workers_dev = true
+
+[observability]
+enabled = true
+
+# 무료 플랜은 SQLite 저장소를 쓰는 Durable Object만 가능
+[[durable_objects.bindings]]
+name = "RANK"
+class_name = "Rank"
+
+[[durable_objects.bindings]]
+name = "INBOX"
+class_name = "Inbox"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Rank", "Inbox"]
